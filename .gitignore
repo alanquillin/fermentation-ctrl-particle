@@ -1,0 +1,5 @@
+lib/
+target/
+builds/
+.vscode/
+src/fermentation-controller.cpp
