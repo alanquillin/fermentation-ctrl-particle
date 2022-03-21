@@ -18,7 +18,8 @@ typedef struct {
 } device_data_t;
 
 typedef struct {
-    double currentTemp;
+    double temperature;
+    long timestamp;
 } device_stats_t;
 
 class DataService {
@@ -28,11 +29,12 @@ public:
     device_data_t findDevice(String manufacturerId);
     device_data_t getDeviceData(String id);
     device_data_t registerDevice(String manufacturerId, double targetTemp, double calibrationDiff);
-    bool sendStats(String id, device_stats_t stats);
+    bool sendStats(String id, device_stats_t stats[], uint8_t size);
     bool updateTargetTemp(String id, double targetTemp);
     bool updateCalibrationDiff(String id, double calibrationDiff);
     bool updatePrecision(String id, double precision);
-    bool updateTempVariable(String id, double tempVariable);
+    bool updateHeatingDifferential(String id, double heatingDifferential);
+    bool updateCoolingDifferential(String id, double coolingDifferential);
     bool updateDeviceValue(String id, String key, String value);
 
 private:
@@ -43,17 +45,17 @@ private:
 
     http_request_t _buildRequest(String path);
     http_request_t _buildRequest(String path, String data);
-    http_request_t _buildRequest(String path, DynamicJsonDocument jDoc, int docSize=1024);
-    DynamicJsonDocument _getJson(String path);
+    http_request_t _buildRequest(String path, DynamicJsonDocument jDoc, const uint16_t docSize=1024);
+    DynamicJsonDocument _getJson(String path, const uint16_t docSize=1024);
     http_response_t _get(String path);
     http_response_t _get(http_request_t request);
     http_response_t _patch(String path, String data);
-    http_response_t _patch(String path, DynamicJsonDocument jDoc, int docSize=1024);
+    http_response_t _patch(String path, DynamicJsonDocument jDoc, const uint16_t docSize=1024);
     http_response_t _patch(http_request_t request);
     http_response_t _post(String path, String data);
-    http_response_t _post(String path, DynamicJsonDocument jDoc, int docSize=1024);
+    http_response_t _post(String path, DynamicJsonDocument jDoc, const uint16_t docSize=1024);
     http_response_t _post(http_request_t request);
-    DynamicJsonDocument _respToJson(http_response_t response);
+    DynamicJsonDocument _respToJson(http_response_t response, const uint16_t docSize=1024);
     device_data_t _parseDeviceData(DynamicJsonDocument jDoc);
 };
 

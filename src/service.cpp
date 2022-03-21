@@ -1,6 +1,8 @@
 #include <service.h>
 #include <HttpClient.h>
 
+Logger logger("app.service");
+
 HttpClient http_client;
 
 /**
@@ -43,10 +45,8 @@ bool DataService::ping(){
 }
 
 device_data_t DataService::getDeviceData(String id){
-    DynamicJsonDocument doc = _getJson("/api/v1/fermentation/controllers/" + id);
-    device_data_t res;
-
-    return res;
+    DynamicJsonDocument doc = _getJson("/api/v1/fermentation/controllers/" + id, 256);
+    return _parseDeviceData(doc);
 }
 
 device_data_t DataService::findDevice(String manufacturerId){
@@ -56,43 +56,49 @@ device_data_t DataService::findDevice(String manufacturerId){
     path.concat(_model);
     path.concat("&manufacturer_id=");
     path.concat(manufacturerId);
-    DynamicJsonDocument doc = _getJson(path);
+    DynamicJsonDocument doc = _getJson(path, 256);
     
-    device_data_t res;
-    return res;
+    return _parseDeviceData(doc);
 }
 
 device_data_t DataService::registerDevice(String manufacturerId, double targetTemp, double calibrationDiff){
     String path = "/api/v1/fermentation/controllers/";
 
-    DynamicJsonDocument jData(1024);
-    jData["manufacturerId"] = manufacturerId.c_str();
+    const uint16_t docSize = 192;
+    DynamicJsonDocument jData(docSize);
+    jData["manufacturerId"] =  manufacturerId.c_str();
     jData["manufacturer"] = MANUFACTURER.c_str();
     jData["model"] = _model.c_str();
-    jData["targetTemperature"] = String(targetTemp, 2).c_str();
-    jData["calibrationDifferential"] = String(calibrationDiff, 2).c_str();
+    jData["targetTemperature"] = String(targetTemp, 2).toFloat();
+    jData["calibrationDifferential"] = String(calibrationDiff, 2).toFloat();
 
     device_data_t res = {true};
     int cnt = 0;
     while(cnt < DS_MAX_RETRY){
-        http_response_t response = _post(path, jData);
+        http_response_t response = _post(path, jData, docSize);
         if (response.status < 300){
-            return _parseDeviceData(_respToJson(response));
+            return _parseDeviceData(_respToJson(response, 256));
         }
         cnt = cnt + 1;
     }
     return res;
 }
 
-bool DataService::sendStats(String id, device_stats_t stats){
+bool DataService::sendStats(String id, device_stats_t stats[], uint8_t size){
     String path = "/api/v1/fermentation/controllers/" + id + "/stats";
 
-    DynamicJsonDocument jData(1024);
-    jData["temperature"] = String(stats.currentTemp, 2).c_str();
+    const uint16_t docSize = 384;
+    DynamicJsonDocument jData(docSize);
+    for(uint8_t i = 0; i < size; i++) {
+        JsonObject jItem = jData.createNestedObject();
+        const device_stats_t s = stats[i];
+        jItem["t"] = s.temperature;
+        jItem["ts"] = s.timestamp;
+    }
 
     int cnt = 0;
     while(cnt < DS_MAX_RETRY){
-        http_response_t response = _post(path, jData);
+        http_response_t response = _post(path, jData, docSize);
         if (response.status < 300) {
             return true;
         }
@@ -110,17 +116,21 @@ bool DataService::updateCalibrationDiff(String id, double calibrationDiff){
 }
 
 bool DataService::updatePrecision(String id, double precision) {
-    return updateDeviceValue(id, "targetTemperaturePrecision", String(calibrationDiff, 2));
+    return updateDeviceValue(id, "targetTemperaturePrecision", String(precision, 2));
 }
 
-bool DataService::updateTempVariable(String id, double tempVariable) {
-    return updateDeviceValue(id, "temperatureVariable", String(calibrationDiff, 2));
+bool DataService::updateHeatingDifferential(String id, double heatingDifferential) {
+    return updateDeviceValue(id, "temperatureVariable", String(heatingDifferential, 2));
+}
+
+bool DataService::updateCoolingDifferential(String id, double coolingDifferential) {
+    return updateDeviceValue(id, "temperatureVariable", String(coolingDifferential, 2));
 }
 
 bool DataService::updateDeviceValue(String id, String key, String value){
     String path = "/api/v1/fermentation/controllers/" + id;
 
-    DynamicJsonDocument jData(1024);
+    DynamicJsonDocument jData(128);
     jData[key.c_str()] = value.c_str();
 
     int cnt = 0;
@@ -134,8 +144,8 @@ bool DataService::updateDeviceValue(String id, String key, String value){
     return false;
 }
 
-DynamicJsonDocument DataService::_getJson(String path) {
-    return _respToJson(_get(path));
+DynamicJsonDocument DataService::_getJson(String path, uint16_t docSize) {
+    return _respToJson(_get(path), docSize);
 }
 
 http_response_t DataService::_get(String path) {
@@ -145,7 +155,7 @@ http_response_t DataService::_get(String path) {
 http_response_t DataService::_get(http_request_t request){
     http_response_t response;
 
-    Serial.printlnf("DataService>\tGET %s://%s:%d%s", _scheme.c_str(), request.hostname.c_str(), request.port, request.path.c_str());
+    logger.trace("GET %s://%s:%d%s", _scheme.c_str(), request.hostname.c_str(), request.port, request.path.c_str());
 
     http_header_t headers[] = {
         { "Accept" , "application/json" },
@@ -153,13 +163,13 @@ http_response_t DataService::_get(http_request_t request){
     };
     http_client.get(request, response, headers);
 
-    Serial.printlnf("DataService>\tResponse status: %d", response.status);
-    Serial.printlnf("DataService>\tResponse Body: %s", response.body.c_str());
+    logger.trace("Response status: %d", response.status);
+    logger.trace("Response Body: %s", response.body.c_str());
 
     return response;
 }
 
-http_response_t DataService::_patch(String path, DynamicJsonDocument jDoc, int docSize){
+http_response_t DataService::_patch(String path, DynamicJsonDocument jDoc, const uint16_t docSize){
     return _post(_buildRequest(path, jDoc, docSize));
 }
 
@@ -170,8 +180,8 @@ http_response_t DataService::_patch(String path, String data){
 http_response_t DataService::_patch(http_request_t request){
     http_response_t response;
 
-    Serial.printlnf("DataService>\tPATCH %s://%s:%d%s", _scheme.c_str(), request.hostname.c_str(), request.port, request.path.c_str());
-    Serial.printlnf("DataService>\tData: %s", request.body.c_str());
+    logger.trace("PATCH %s://%s:%d%s", _scheme.c_str(), request.hostname.c_str(), request.port, request.path.c_str());
+    logger.trace("Data: %s", request.body.c_str());
 
     http_header_t headers[] = {
         { "Content-Type", "application/json" },
@@ -180,16 +190,15 @@ http_response_t DataService::_patch(http_request_t request){
     };
     http_client.patch(request, response, headers);
 
-    Serial.printlnf("DataService>\tResponse status: %d", response.status);
-    Serial.printlnf("DataService>\tResponse Body: %s", response.body.c_str());
+    logger.trace("Response status: %d", response.status);
+    logger.trace("Response Body: %s", response.body.c_str());
     
     return response;
 }
 
-http_response_t DataService::_post(String path, DynamicJsonDocument jDoc, int docSize){
+http_response_t DataService::_post(String path, DynamicJsonDocument jDoc, const uint16_t docSize){
     return _post(_buildRequest(path, jDoc, docSize));
 }
-
 http_response_t DataService::_post(String path, String data){
     return _post(_buildRequest(path, data));
 }
@@ -197,8 +206,8 @@ http_response_t DataService::_post(String path, String data){
 http_response_t DataService::_post(http_request_t request){
     http_response_t response;
 
-    Serial.printlnf("DataService>\tPOST %s://%s:%d%s", _scheme.c_str(), request.hostname.c_str(), request.port, request.path.c_str());
-    Serial.printlnf("DataService>\tData: %s", request.body.c_str());
+    logger.trace("POST %s://%s:%d%s", _scheme.c_str(), request.hostname.c_str(), request.port, request.path.c_str());
+    logger.trace("Data: %s", request.body.c_str());
 
     http_header_t headers[] = {
         { "Content-Type", "application/json" },
@@ -207,8 +216,8 @@ http_response_t DataService::_post(http_request_t request){
     };
     http_client.post(request, response, headers);
 
-    Serial.printlnf("DataService>\tResponse status: %d", response.status);
-    Serial.printlnf("DataService>\tResponse Body: %s", response.body.c_str());
+    logger.trace("Response status: %d", response.status);
+    logger.trace("Response Body: %s", response.body.c_str());
     
     return response;
 }
@@ -227,18 +236,18 @@ http_request_t DataService::_buildRequest(String path, String data) {
     return request;
 }
 
-http_request_t DataService::_buildRequest(String path, DynamicJsonDocument jDoc, int docSize) {
+http_request_t DataService::_buildRequest(String path, DynamicJsonDocument jDoc, const uint16_t docSize) {
     char data[1024];
     serializeJson(jDoc, data);
     return _buildRequest(path, data);
 }
 
-DynamicJsonDocument DataService::_respToJson(http_response_t response) {
-    DynamicJsonDocument doc(1024);
+DynamicJsonDocument DataService::_respToJson(http_response_t response, const uint16_t docSize) {
+    DynamicJsonDocument doc(docSize);
     if (response.status == 200){
         DeserializationError error = deserializeJson(doc, response.body.c_str());
         if (error) {
-            Serial.print(F("deserializeJson() failed: "));
+            logger.error("deserializeJson() failed: ");
             // DO SOMETHING TO THROW AN ERROR 
         }
     }

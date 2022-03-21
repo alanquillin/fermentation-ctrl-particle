@@ -38,7 +38,8 @@ depends:
 	particle library copy HttpClient && \
 	particle library copy ArduinoJson && \
 	particle library copy DS18B20 && \
-	particle library copy LiquidCrystal_I2C_Spark
+	particle library copy LiquidCrystal_I2C_Spark && \
+	particle library copy CircularBuffer
 
 config:
 ifneq ($(shell grep "<__IP_Address__>" "src/fermentation-controller.ino"),)

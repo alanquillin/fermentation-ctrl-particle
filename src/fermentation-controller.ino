@@ -8,17 +8,29 @@
 #include <DS18B20.h>
 #include <math.h>
 #include <service.h>
+#include <CircularBuffer.h>
+
+const LogLevel APP_LOG_LEVEL = LOG_LEVEL_ALL;
+SerialLogHandler logHandler(LOG_LEVEL_WARN, { // Logging level for non-application messages
+    { "app", APP_LOG_LEVEL }, // Logging level for application messages
+    { "app.service", LOG_LEVEL_ALL }
+});
 
 //func prototypes
 void refreshDisplay(bool clear=false);
 
 //pin definitions
 const int16_t P_DS_DATA   = D2;
+//const int16_t P_DS_DATA   = D6;
 const int16_t P_BTN_UP    = A0;
 const int16_t P_BTN_DOWN  = A1;
 const int16_t P_BTN_SET   = A2;
+//const int16_t P_CTRL_COOL = D4;
+//const int16_t P_CTRL_HEAT = D5;
 const int16_t P_CTRL_COOL = D3;
 const int16_t P_CTRL_HEAT = D4;
+const int16_t EXTRA_GND[] = {D5};
+const int16_t EXTRA_PWR[] = {A3};
 
 //charactors
 const uint8_t CHAR_SPACE  = 0x20;
@@ -26,40 +38,53 @@ const uint8_t CHAR_ARROW  = 0x7E;
 const uint8_t CHAR_DEGREE = 0xDF;
 
 // modes
-const int MODE_COOLING = 1;
-const int MODE_HEATING = 2;
-const int MODE_HOLD    = 3;
-const int MODE_OFF     = 0;
+const uint8_t MODE_COOLING = 1;
+const uint8_t MODE_HEATING = 2;
+const uint8_t MODE_HOLD    = 3;
+const uint8_t MODE_OFF     = 0;
 
 // states
-const int STATE_DEFAULT            = 0;
-const int STATE_MENU               = 1;
-const int STATE_MENU_SET_TEMP      = 2;
-const int STATE_MENU_CALIBRATE     = 3;
-const int STATE_MENU_SET_PRECISION = 4;
-const int STATE_MENU_TEMP_VAR      = 5;
+const uint8_t STATE_DEFAULT            = 0;
+const uint8_t STATE_MENU               = 1;
+const uint8_t STATE_MENU_SET_TEMP      = 2;
+const uint8_t STATE_MENU_CALIBRATE     = 3;
+const uint8_t STATE_MENU_SET_PRECISION = 4;
+const uint8_t STATE_MENU_HEAT_DIFF     = 5;
+const uint8_t STATE_MENU_COOL_DIFF     = 6;
 
 // other constants
-const int MAXRETRY = 4;
-const int LONG_BTN_PRESS_MILS = 2000;
+const uint8_t MAXRETRY = 4;
+const uint16_t LONG_BTN_PRESS_MILS = 2000;
+const uint16_t STATS_PUSH_FREQUENCY_MS = 5000;
 
 // dataservice
 const String HOST = "<__IP_Address__>";
-const int PORT = 80;
+const uint16_t PORT = 80;
+
+CircularBuffer<device_stats_t,100> stats;
 
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 DS18B20 ds18b20(P_DS_DATA, true);
+
 DataService dataService(HOST, PORT);
+bool serviceReady = false;
+uint32_t serviceFailCnt = 0;
+uint32_t lastServiceCheck;
+uint32_t lastStatsPush;
 String manufacturerId;
 String deviceId;
+byte mac[6];
 
 double fahrenheit = 0;
+double prevFahrenheit = fahrenheit;
 double targetTemp = 68;
 double tTargetTemp = targetTemp;
-double tempVariable = 1;
-double tTempVariable = tempVariable;
-double precision = .5;
-double tPrecision = precision;
+double coolingDifferential = 1;
+double tCoolingDifferential = coolingDifferential;
+double heatingDifferential = 1;
+double tHeatingDifferential = heatingDifferential;
+double tempPrecision = .5;
+double tTempPrecision = tempPrecision;
 double calibrationDiff = 0;
 double calibrationTemp;
 int currentMode = MODE_HOLD;
@@ -69,11 +94,14 @@ uint32_t msLastSample;
 
 // menu state vars
 const String MENU_SET_MODE_OPTION = "<SET MODE>";
-const int MENU_ITEM_SIZE = 4;
+const uint8_t MENU_ITEM_SIZE = 7;
 const String MENU_ITEMS[MENU_ITEM_SIZE] = {
   "Set Target Temp   ",
   MENU_SET_MODE_OPTION,
   "Calibrate Temp    ",
+  "Set Heating Diff  ",
+  "Set Cooling Diff  ",
+  "Set Temp Precision",
   "Back              "
 };
 int menuFirstItemIndex = 0;
@@ -94,49 +122,66 @@ bool btnSetLongPressedHandled = false;
 Timer tempTimer(2000, getTemp);
 Timer refreshDisplayTimer(1000, refreshDisplayWrapper);
 Timer setModeTimer(1000, setModeCtl);
-Timer pingServiceTimer(120000, ping);
 
 // setup() runs once, when the device is first turned on.
 void setup() {
   // Put initialization like pinMode and begin functions here.
   Serial.begin(9600);
-  Serial.println("Starting up...");
-  lcd.init();
-  lcd.backlight();
-  lcd.clear();
-  Serial.println("Initializing...");
-  lcd.print("Initializing...");
   
-  manufacturerId = System.deviceID();
-
-  Serial.printlnf("Device Manufacturer Id: %s", manufacturerId);
-  Serial.printlnf("Wifi MAC address: %s", WiFi.macAddress());
-  Serial.printlnf("Wifi IP address: %s", WiFi.localIP());
-
-  lcd.setCursor(0,1);
-  lcd.print("Wifi... %s" WiFi.ready() ? "connected!" : "failed");
-
-  Serial.printlnf("Temp sensor chip type: %x", ds18b20.getChipType());
-  Serial.printlnf("Temp sensor chip name: %s", ds18b20.getChipName());
-
+  Log.trace("Initializing Pins.");
   pinMode(P_BTN_UP, INPUT_PULLDOWN);
   pinMode(P_BTN_DOWN, INPUT_PULLDOWN);
   pinMode(P_BTN_SET, INPUT_PULLDOWN);
 
   pinMode(P_CTRL_COOL, OUTPUT);
   pinMode(P_CTRL_HEAT, OUTPUT);
+
+  for(uint i=0; i < arraySize(EXTRA_GND); i++) {
+    pinMode(EXTRA_GND[i], OUTPUT);
+    digitalWrite(EXTRA_GND[i], LOW);
+  }
+
+  for(uint i=0; i < arraySize(EXTRA_PWR); i++) {
+    pinMode(EXTRA_PWR[i], OUTPUT);
+    digitalWrite(EXTRA_PWR[i], HIGH);
+  }
+  Log.trace("Pin initialization done.");
+
+  Log.info("Starting up...");
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  Log.info("Initializing...");
+  lcd.print("Initializing...");
   
+  manufacturerId = System.deviceID();
+
+  Log.trace("Device Manufacturer Id: %s", manufacturerId.c_str());
+  WiFi.macAddress(mac);
+  Log.trace("Wifi MAC address: %02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  Log.trace("Wifi IP address: %s", WiFi.localIP().toString().c_str());
+
+  lcd.setCursor(0,1);
+  lcd.printf("Wifi... %s", WiFi.ready() ? "connected!" : "failed");
+
+  Log.trace("Temp sensor chip type: %x", ds18b20.getChipType());
+  Log.trace("Temp sensor chip name: %s", ds18b20.getChipName());
+
+  
+  
+  Log.trace("Setting up cloud functions and variables.");
   Particle.function("setTargetTempF", cldSetTargetTemp);
   Particle.function("setMode", cldSetMode);
 
   Particle.variable("currentTemperature", fahrenheit);
-  Particle.variable("targetTempPrecision", precision);
+  Particle.variable("tempPrecision", tempPrecision);
   Particle.variable("targetTemperature", targetTemp);
   Particle.variable("calibrationDifferential", calibrationDiff);
-
+  Log.trace("Cloud stuff all set up!");
+  
   lcd.setCursor(0,2);
   lcd.print("Data Svc... ");
-  int pingStatus = ping();
+  uint8_t pingStatus = ping();
   switch(pingStatus) {
     case 0:
       lcd.print("success!");
@@ -149,36 +194,38 @@ void setup() {
       break;
   }
 
-  Serial.printlnf("Device Id: %s", deviceId);
-  Serial.printlnf("Target Temp: %.2f", targetTemp);
-  Serial.printlnf("Target Temp Precision: %.2f", precision);
-  Serial.printlnf("Calibration Differential: %.2f", calibrationDiff);
+  Log.trace("Device Id: %s", deviceId.c_str());
+  Log.trace("Target Temp: %.2f", targetTemp);
+  Log.trace("Target Temp Precision: %.2f", tempPrecision);
+  Log.trace("Calibration Differential: %.2f", calibrationDiff);
 
   tempTimer.start();
   refreshDisplayTimer.start();
   setModeTimer.start();
-  pingServiceTimer.start();
 
-  Serial.println("Initialization complete!");
+  Log.info("Initialization complete!");
   lcd.setCursor(0,0);
   lcd.print("Initializing... done!");
 
-  setMode(MODE_DEFAULT);
+  setState(STATE_DEFAULT);
 }
 
 // loop() runs over and over again, as quickly as it can execute.
 void loop() {
+  bool isBtnPresseed = false;
   int _btnUpState = digitalRead(P_BTN_UP);
+  uint32_t now = millis();
   if (_btnUpState != btnUpState) {
     if(btnUpState == HIGH) {
       upBtnPressed();
     } else {
+      isBtnPresseed = true;
       btnUpLongPressedHandled = false;
       btnUpPressStart = millis();
     }
     btnUpState = _btnUpState;
   } else if (btnUpState == HIGH) {
-    uint32_t now = millis();
+    isBtnPresseed = true;
     if ((now - btnUpPressStart) >= LONG_BTN_PRESS_MILS && !btnUpLongPressedHandled) {
       upBtnPressedLong();
     }
@@ -189,12 +236,14 @@ void loop() {
     if(btnDownState == HIGH) {
       downBtnPressed();
     } else {
+      isBtnPresseed = true;
       btnDownLongPressedHandled = false;
       btnDownPressStart = millis();
     }
     btnDownState = _btnDownState;
   } else if (btnDownState == HIGH) {
-    uint32_t now = millis();
+    isBtnPresseed = true;
+    
     if ((now - btnDownPressStart) >= LONG_BTN_PRESS_MILS && !btnDownLongPressedHandled) {
       downBtnPressedLong();
     }
@@ -205,16 +254,43 @@ void loop() {
     if(btnSetState == HIGH) {
       setBtnPressed();
     } else {
+      isBtnPresseed = true;
       btnSetLongPressedHandled = false;
       btnSetPressStart = millis();
     }
     btnSetState = _btnSetState;
   } else if (btnSetState == HIGH) {
-    uint32_t now = millis();
+    isBtnPresseed = true;
     if ((now - btnSetPressStart) >= LONG_BTN_PRESS_MILS && !btnSetLongPressedHandled) {
       setBtnPressedLong();
     }
   }
+
+   if (prevFahrenheit != fahrenheit) {
+    if(prevFahrenheit != NAN && prevFahrenheit > 0 && prevFahrenheit < 100 && fahrenheit != NAN && fahrenheit > 0 && fahrenheit < 100) {
+      float diff = prevFahrenheit - fahrenheit;
+      Log.trace("getTemp: _prev: %f, diff: %f", prevFahrenheit, diff);
+      if (diff <= -0.02 || diff >= 0.02) {
+        Log.trace("getTemp: Temp has changed (after rounding).  Old: %f, New: %f, diff: %f.  Updating database.", prevFahrenheit, fahrenheit, diff);
+        prevFahrenheit = fahrenheit;
+        stats.push({fahrenheit, Time.now()}); // put stat record to the end of the queue
+      }
+    } 
+  }
+
+  if (!isBtnPresseed && displayState == STATE_DEFAULT) {
+    // uint16_t nextCheckFreq = serviceReady ? 10000 : serviceFailCnt > 20 ? 20000 : (serviceFailCnt * 1000);
+    // uint32_t elapsed = (now - lastServiceCheck);
+    // if (elapsed >= nextCheckFreq) {
+    //   Log.trace("%.1f seconds have elapsed since the last service check...", (float(elapsed) / 1000));
+    //   Log.info("Pinging service");
+    //   ping();
+    // }
+    // if (serviceReady && (lastStatsPush == 0 || (now - lastStatsPush > STATS_PUSH_FREQUENCY_MS))) {
+    //   pushStats();
+    // }
+  }
+
 }
 
 void setState(int state) {
@@ -241,11 +317,14 @@ void setState(int state) {
     case STATE_MENU_CALIBRATE:
       calibrationTemp = (fahrenheit == NAN || fahrenheit <= 0) ? targetTemp : fahrenheit;
       break;
-    case STATE_MENU_TEMP_VAR:
-      tTempVariable = tempVariable;
+    case STATE_MENU_HEAT_DIFF:
+      tHeatingDifferential = heatingDifferential;
+      break;
+    case STATE_MENU_COOL_DIFF:
+      tCoolingDifferential = coolingDifferential;
       break;
     case STATE_MENU_SET_PRECISION:
-      tPrecision = precision;
+      tTempPrecision = tempPrecision;
       break;
   }
   refreshDisplay(true);
@@ -254,12 +333,13 @@ void setState(int state) {
 void upBtnPressed() {
   uint32_t now = millis();
   if ((now - btnUpPressStart) >= LONG_BTN_PRESS_MILS) {
+    Log.trace("up pressed function ignored since the button is long pressed");
     return;
   }
-  Serial.println("Up btn pressed");
+  Log.trace("Up btn pressed");
   switch(displayState) {
     case STATE_MENU_SET_TEMP:
-      tTargetTemp = tTargetTemp + .5;
+      tTargetTemp = tTargetTemp + tempPrecision;
       refreshDisplay();
       break;
     case STATE_MENU:
@@ -278,6 +358,18 @@ void upBtnPressed() {
       calibrationTemp = calibrationTemp + .1;
       refreshDisplay();
       break;
+    case STATE_MENU_SET_PRECISION:
+      tTempPrecision = tTempPrecision + .1;
+      refreshDisplay();
+      break;
+    case STATE_MENU_HEAT_DIFF:
+      tHeatingDifferential = tHeatingDifferential + tempPrecision;
+      refreshDisplay();
+      break;
+    case STATE_MENU_COOL_DIFF:
+      tCoolingDifferential = tCoolingDifferential + tempPrecision;
+      refreshDisplay();
+      break;
   }
 }
 
@@ -288,13 +380,13 @@ void upBtnPressedLong() {
 void downBtnPressed() {
   uint32_t now = millis();
   if ((now - btnDownPressStart) >= LONG_BTN_PRESS_MILS) {
-    Serial.println("button pressed function ignored since the button is long pressed");
+    Log.trace("button pressed function ignored since the button is long pressed");
     return;
   }
-  Serial.println("Down btn pressed");
+  Log.trace("Down btn pressed");
   switch(displayState) {
     case STATE_MENU_SET_TEMP:
-      tTargetTemp = tTargetTemp - .5;
+      tTargetTemp = tTargetTemp - tempPrecision;
       refreshDisplay();
       break;
     case STATE_MENU:
@@ -312,6 +404,30 @@ void downBtnPressed() {
     case STATE_MENU_CALIBRATE:
       calibrationTemp = calibrationTemp - .1;
       refreshDisplay();
+      break;
+    case STATE_MENU_SET_PRECISION:
+      if (tTempPrecision > .1) {
+        tTempPrecision = tTempPrecision - .1;
+        refreshDisplay();
+      }
+      break;
+    case STATE_MENU_HEAT_DIFF:
+      if(tHeatingDifferential > 0) {
+        tHeatingDifferential = tHeatingDifferential - tempPrecision;
+        if (tHeatingDifferential < 0) {
+          tHeatingDifferential = 0;
+        }
+        refreshDisplay();
+      }
+      break;
+    case STATE_MENU_COOL_DIFF:
+      if(tCoolingDifferential > 0) {
+        tCoolingDifferential = tCoolingDifferential - tempPrecision;
+        if (tCoolingDifferential < 0) {
+          tCoolingDifferential = 0;
+        }
+        refreshDisplay();
+      }
       break;
   }
 }
@@ -341,6 +457,15 @@ void setBtnPressed() {
           setState(STATE_MENU_CALIBRATE);
           break;
         case 3:
+          setState(STATE_MENU_HEAT_DIFF);
+          break;
+        case 4:
+          setState(STATE_MENU_COOL_DIFF);
+          break;
+        case 5:
+          setState(STATE_MENU_SET_PRECISION);
+          break;
+        case 6:
           setState(STATE_DEFAULT);
           break;
       }
@@ -357,16 +482,22 @@ void setBtnPressed() {
       // deviceService.updateCalibrationDiff(deviceId, calibrationDiff);
       setState(STATE_MENU);
       break;
-    case STATE_MENU_TEMP_VAR:
-      tempVariable = tTempVariable;
+    case STATE_MENU_HEAT_DIFF:
+      heatingDifferential = tHeatingDifferential;
       // TODO: Update data service
-      // deviceService.updateTempVariable(deviceId, tempVariable);
+      // deviceService.updateHeatingDifferential(deviceId, heatingDifferential);
+      setState(STATE_MENU);
+      break;
+    case STATE_MENU_COOL_DIFF:
+      coolingDifferential = tCoolingDifferential;
+      // TODO: Update data service
+      // deviceService.updateCoolingDifferential(deviceId, coolingDifferential);
       setState(STATE_MENU);
       break;
     case STATE_MENU_SET_PRECISION:
-      precision = tPrecision;
+      tempPrecision = tTempPrecision;
       // TODO: Update data service
-      // deviceService.updatePrecision(deviceId, precision);
+      // deviceService.updatePrecision(deviceId, tempPrecision);
       setState(STATE_MENU);
       break;
   }
@@ -385,45 +516,64 @@ void setBtnPressedLong() {
     case STATE_MENU_CALIBRATE:
     case STATE_MENU_SET_PRECISION:
     case STATE_MENU_SET_TEMP:
-    case STATE_MENU_TEMP_VAR:
+    case STATE_MENU_HEAT_DIFF:
+    case STATE_MENU_COOL_DIFF:
       setState(STATE_MENU);
       break;
   }
   
 }
 
-void setMode(int mode) {
+void setMode(uint8_t mode) {
   //int _previousMode = currentMode;
   currentMode = mode;
 }
 
 void setModeCtl() {
+  int _previousMode = currentMode;
+
   if(currentMode != MODE_OFF) {
     if(fahrenheit > 0 && fahrenheit != NAN) {
-      setMode(fahrenheit > (targetTemp + tempVariable) ?  MODE_COOLING : fahrenheit < (targetTemp - tempVariable) ? MODE_HEATING : MODE_HOLD);
+      switch(currentMode) {
+        case MODE_COOLING:
+          if(fahrenheit <= targetTemp) {
+            setMode(MODE_HOLD);
+          }
+          break;
+        case MODE_HEATING:
+          if(fahrenheit >= targetTemp) {
+            setMode(MODE_HOLD);
+          }
+          break;
+        case MODE_HOLD:
+          setMode(fahrenheit > (targetTemp + coolingDifferential) ?  MODE_COOLING : fahrenheit < (targetTemp - heatingDifferential) ? MODE_HEATING : MODE_HOLD);
+          break;
+      }
     } else {
       setMode(MODE_HOLD);
-      Serial.printlnf("Temp sample is %f, setting to Hold as something is weird or the systems just started up and no temp has been taken", fahrenheit);
+      //Log.trace("Temp sample is %f, setting to Hold as something is weird...", fahrenheit);
     }
   }
 
-  switch(currentMode) {
-    case MODE_COOLING:
-      digitalWrite(P_CTRL_COOL, HIGH);
-      digitalWrite(P_CTRL_HEAT, LOW);
-      break;
-    case MODE_HEATING:
-      digitalWrite(P_CTRL_COOL, LOW);
-      digitalWrite(P_CTRL_HEAT, MODE_HEATING);
-      break;
-    case MODE_HOLD:
-      digitalWrite(P_CTRL_COOL, LOW);
-      digitalWrite(P_CTRL_HEAT, LOW);
-      break;
-    case MODE_OFF:
-      digitalWrite(P_CTRL_COOL, LOW);
-      digitalWrite(P_CTRL_HEAT, LOW);
-      break;
+  if (currentMode != _previousMode) {
+    switch(currentMode) {
+      case MODE_COOLING:
+        digitalWrite(P_CTRL_COOL, HIGH);
+        digitalWrite(P_CTRL_HEAT, LOW);
+        break;
+      case MODE_HEATING:
+        digitalWrite(P_CTRL_COOL, LOW);
+        digitalWrite(P_CTRL_HEAT, MODE_HEATING);
+        break;
+      case MODE_HOLD:
+        digitalWrite(P_CTRL_COOL, LOW);
+        digitalWrite(P_CTRL_HEAT, LOW);
+        break;
+      case MODE_OFF:
+        digitalWrite(P_CTRL_COOL, LOW);
+        digitalWrite(P_CTRL_HEAT, LOW);
+        break;
+    }
   }
 }
 
@@ -476,7 +626,7 @@ void refreshDisplay(bool clear){
   if (displayState == STATE_MENU) {
     lcd.setCursor(0,0);
     lcd.printf("Menu:               ");
-    for (int i = 0; i <= 2; i++) {
+    for (uint8_t i = 0; i <= 2; i++) {
       lcd.setCursor(0,i+1);
       String m = MENU_ITEMS[menuFirstItemIndex + i];
       if (m == MENU_SET_MODE_OPTION) {
@@ -507,6 +657,36 @@ void refreshDisplay(bool clear){
     lcd.setCursor(0,3);
     lcd.printf("                    ");
   }
+  if (displayState == STATE_MENU_HEAT_DIFF) {
+    lcd.setCursor(0,0);
+    lcd.printf("Set Heating Diff");
+    lcd.setCursor(0,1);
+    lcd.printf("                    ");
+    lcd.setCursor(0,2);
+    lcd.printf("Differential: %3.1f%cf", tHeatingDifferential, CHAR_DEGREE);
+    lcd.setCursor(0,3);
+    lcd.printf("                    ");
+  }
+  if (displayState == STATE_MENU_COOL_DIFF) {
+    lcd.setCursor(0,0);
+    lcd.printf("Set Cooling Diff");
+    lcd.setCursor(0,1);
+    lcd.printf("                    ");
+    lcd.setCursor(0,2);
+    lcd.printf("Differential: %3.1f%cf", tCoolingDifferential, CHAR_DEGREE);
+    lcd.setCursor(0,3);
+    lcd.printf("                    ");
+  }
+  if (displayState == STATE_MENU_SET_PRECISION) {
+    lcd.setCursor(0,0);
+    lcd.printf("Set Temp Precision");
+    lcd.setCursor(0,1);
+    lcd.printf("                    ");
+    lcd.setCursor(0,2);
+    lcd.printf("Value: %3.1f%cf", tTempPrecision, CHAR_DEGREE);
+    lcd.setCursor(0,3);
+    lcd.printf("                    ");
+  }
   refreshLock = false;
 }
 
@@ -519,26 +699,17 @@ void getTemp(){
   } while (!ds18b20.crcCheck() && MAXRETRY > i++);
 
   if (i < MAXRETRY) {
-    double _prev = fahrenheit;
+    prevFahrenheit = fahrenheit;
     fahrenheit = ds18b20.convertToFahrenheit(_temp) + calibrationDiff;
-    
-    if(_prev != NAN && _prev > 0 && _prev < 100 && fahrenheit != NAN && fahrenheit > 0 && fahrenheit < 100) {
-      char _p[8];
-      snprintf(_p, 8, "%.1f", _prev);
-      char _t[8];
-      snprintf(_t, 8, "%.1f", fahrenheit);
-      if(strcmp(_p, _t) != 0) {
-        Serial.printlnf("Temp has changed (after rounding).  Old: %s, New: %s.  Updating database.", _p, _t);
-        // TODO update service
-        // deviceService.sendStats(deviceId, {fahrenheit});
-      }
+
+    if (APP_LOG_LEVEL == LOG_LEVEL_ALL || APP_LOG_LEVEL == LOG_LEVEL_TRACE) {
+      Serial.printlnf("Temperature reading: %.2f", fahrenheit);
     }
 
-    Serial.println(fahrenheit);
   }
   else {
     fahrenheit = NAN;
-    Serial.println("Invalid reading");
+    Serial.println("[ERROR] getTemp: Invalid temperature reading...");
   }
   msLastSample = millis();
 }
@@ -562,33 +733,69 @@ int cldSetMode(String data) {
   return 0;
 }
 
-int ping() {
-  bool success = dataService.ping();
-  if(success){
-      Serial.println("Service is available!!");
+uint8_t ping() {
+  lastServiceCheck = millis();
+  serviceReady = dataService.ping();
 
-      if(deviceId.length() == 0) {
-        Serial.println("Device Id from the data service has not been set, retrieving.");
+  if(serviceReady){
+    serviceFailCnt = 0;
+    Log.info("Service is available!!");
 
-        device_data_t deviceData = dataService.findDevice(manufacturerId);
+    if(deviceId.length() == 0) {
+      Log.info("Device Id from the data service has not been set, retrieving.");
 
-        if(deviceData.isNull) {
-            Serial.println("Device not found on server.  Attempting to register");
+      device_data_t deviceData = dataService.findDevice(manufacturerId);
 
-            deviceData = dataService.registerDevice(manufacturerId, targetTemp, calibrationDiff);
-        }
+      if(deviceData.isNull) {
+          Log.warn("Device not found on server.  Attempting to register");
 
-        if(!deviceData.isNull) {
-            deviceId = deviceData.id;
-            targetTemp = deviceData.targetTemp;
-            calibrationDiff = deviceData.calibrationDiff;
-        } else {
-          return 2;
-        }
+          deviceData = dataService.registerDevice(manufacturerId, targetTemp, calibrationDiff);
       }
+
+      if(!deviceData.isNull) {
+          deviceId = deviceData.id;
+          targetTemp = deviceData.targetTemp;
+          calibrationDiff = deviceData.calibrationDiff;
+      } else {
+        Log.error("Registration failed, no device information returned.");
+        return 2;
+      }
+    }
   } else {
-      Serial.println("Service is currently unavailable.");
-      return 1;
+    serviceFailCnt = serviceFailCnt + 1;
+    Log.error("Service is currently unavailable.");
+    return 1;
+  }
+
+  return 0;
+}
+
+uint8_t pushStats() {
+  lastStatsPush = millis();
+  if (stats.isEmpty()){
+    Log.warn("Stat set is empty, nothing to push... there may be an issue with  the temperature probe.");
+  }
+
+  Log.trace("Sending temp stats to data service.");
+  const uint8_t batchSize = 10;
+  device_stats_t batch[batchSize];
+  uint8_t i = 0;
+  while(!stats.isEmpty() && i < batchSize) {
+    device_stats_t s = stats.shift(); // retrieve and remove first stats item from the queue
+    batch[i] = s;
+    i = i + 1;
+  }
+  if(i > 0) {
+    bool success = dataService.sendStats(deviceId, batch, i);
+    if(success) {
+      Log.trace("Successfully send %d stats records to the data service", i);
+    } else {
+      Log.trace("Failed to send %d stats records to data service.", i);
+    }
+
+    return success ? 0 : 1;
+  } else {
+    Log.error("No stats records were batched to send to the data service... this should not happen as the buffer states it is not empty... WTH!");
   }
 
   return 0;
