@@ -13,8 +13,10 @@ typedef struct {
     String manufacturerId;
     double targetTemp;
     double calibrationDiff;
-    double tempVariable;
-    double precision;
+    double coolingDifferential;
+    double heatingDifferential;
+    double tempPrecision;
+    bool programOn;
 } device_data_t;
 
 typedef struct {
@@ -35,6 +37,7 @@ public:
     bool updatePrecision(String id, double precision);
     bool updateHeatingDifferential(String id, double heatingDifferential);
     bool updateCoolingDifferential(String id, double coolingDifferential);
+    bool updateProgramState(String id, bool programOn);
     bool updateDeviceValue(String id, String key, String value);
 
 private:

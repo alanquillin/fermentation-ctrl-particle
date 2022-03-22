@@ -127,6 +127,10 @@ bool DataService::updateCoolingDifferential(String id, double coolingDifferentia
     return updateDeviceValue(id, "temperatureVariable", String(coolingDifferential, 2));
 }
 
+bool DataService::updateProgramState(String id, bool programOn) {
+    return updateDeviceValue(id, "programOn", programOn ? "true": "false");
+}
+
 bool DataService::updateDeviceValue(String id, String key, String value){
     String path = "/api/v1/fermentation/controllers/" + id;
 
@@ -262,7 +266,12 @@ device_data_t DataService::_parseDeviceData(DynamicJsonDocument jDoc) {
         JsonObject deviceDetails = jDoc.as<JsonObject>();
         res.id = String(deviceDetails["id"].as<const char*>());
         res.manufacturerId = String(deviceDetails["manufacturerId"].as<const char*>());
-        res.targetTemp = deviceDetails["targetTemp"].as<int>();
+        res.targetTemp = deviceDetails["targetTemperature"].as<float>();
+        res.calibrationDiff = deviceDetails["calibrationDifferential"].as<float>();
+        res.coolingDifferential = deviceDetails["coolingDifferential"].as<float>();
+        res.heatingDifferential = deviceDetails["heatingDifferential"].as<float>();
+        res.tempPrecision = deviceDetails["temperaturePrecision"].as<float>();
+        res.programOn = deviceDetails["programOn"].as<bool>();
     }
     return res;
 }
