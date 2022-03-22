@@ -51,6 +51,7 @@ const uint8_t STATE_MENU_CALIBRATE     = 3;
 const uint8_t STATE_MENU_SET_PRECISION = 4;
 const uint8_t STATE_MENU_HEAT_DIFF     = 5;
 const uint8_t STATE_MENU_COOL_DIFF     = 6;
+const uint8_t STATE_MENU_RESET_CONFIG  = 7;
 
 // other constants
 const uint8_t MAXRETRY = 4;
@@ -75,26 +76,32 @@ String manufacturerId;
 String deviceId;
 byte mac[6];
 
+struct Config {
+  double targetTemp;
+  double coolingDifferential;
+  double heatingDifferential;
+  double tempPrecision;
+  double calibrationDiff;
+  bool programOn;
+};
+Config config = {68, 1, 1, .5, 0, true};
+
 double fahrenheit = 0;
 double prevFahrenheit = fahrenheit;
-double targetTemp = 68;
-double tTargetTemp = targetTemp;
-double coolingDifferential = 1;
-double tCoolingDifferential = coolingDifferential;
-double heatingDifferential = 1;
-double tHeatingDifferential = heatingDifferential;
-double tempPrecision = .5;
-double tTempPrecision = tempPrecision;
-double calibrationDiff = 0;
+double tTargetTemp = config.targetTemp;
+double tCoolingDifferential = config.coolingDifferential;
+double tHeatingDifferential = config.heatingDifferential;
+double tTempPrecision = config.tempPrecision;
 double calibrationTemp;
 int currentMode = MODE_HOLD;
 int displayState = STATE_DEFAULT;
 bool refreshLock = false;
 uint32_t msLastSample;
+long latestMenuActivityTS;
 
 // menu state vars
 const String MENU_SET_MODE_OPTION = "<SET MODE>";
-const uint8_t MENU_ITEM_SIZE = 7;
+const uint8_t MENU_ITEM_SIZE = 8;
 const String MENU_ITEMS[MENU_ITEM_SIZE] = {
   "Set Target Temp   ",
   MENU_SET_MODE_OPTION,
@@ -102,6 +109,7 @@ const String MENU_ITEMS[MENU_ITEM_SIZE] = {
   "Set Heating Diff  ",
   "Set Cooling Diff  ",
   "Set Temp Precision",
+  "Reset Config      ",
   "Back              "
 };
 int menuFirstItemIndex = 0;
@@ -122,6 +130,7 @@ bool btnSetLongPressedHandled = false;
 Timer tempTimer(2000, getTemp);
 Timer refreshDisplayTimer(1000, refreshDisplayWrapper);
 Timer setModeTimer(1000, setModeCtl);
+Timer menuInactivityTimer(2000, checkMenuInactivity);
 
 // setup() runs once, when the device is first turned on.
 void setup() {
@@ -166,19 +175,19 @@ void setup() {
 
   Log.trace("Temp sensor chip type: %x", ds18b20.getChipType());
   Log.trace("Temp sensor chip name: %s", ds18b20.getChipName());
-
-  
   
   Log.trace("Setting up cloud functions and variables.");
   Particle.function("setTargetTempF", cldSetTargetTemp);
   Particle.function("setMode", cldSetMode);
 
   Particle.variable("currentTemperature", fahrenheit);
-  Particle.variable("tempPrecision", tempPrecision);
-  Particle.variable("targetTemperature", targetTemp);
-  Particle.variable("calibrationDifferential", calibrationDiff);
+  Particle.variable("tempPrecision", config.tempPrecision);
+  Particle.variable("targetTemperature", config.targetTemp);
+  Particle.variable("calibrationDifferential", config.calibrationDiff);
   Log.trace("Cloud stuff all set up!");
   
+  loadConfig();
+
   lcd.setCursor(0,2);
   lcd.print("Data Svc... ");
   uint8_t pingStatus = ping();
@@ -195,9 +204,12 @@ void setup() {
   }
 
   Log.trace("Device Id: %s", deviceId.c_str());
-  Log.trace("Target Temp: %.2f", targetTemp);
-  Log.trace("Target Temp Precision: %.2f", tempPrecision);
-  Log.trace("Calibration Differential: %.2f", calibrationDiff);
+  Log.trace("Target Temp: %.2f", config.targetTemp);
+  Log.trace("Target Temp Precision: %.2f", config.tempPrecision);
+  Log.trace("Calibration Differential: %.2f", config.calibrationDiff);
+  Log.trace("Heating Differential: %.2f", config.heatingDifferential);
+  Log.trace("Cooling Differential: %.2f", config.coolingDifferential);
+  Log.trace("Program on: %s", config.programOn ? "true" : "false");
 
   tempTimer.start();
   refreshDisplayTimer.start();
@@ -207,6 +219,7 @@ void setup() {
   lcd.setCursor(0,0);
   lcd.print("Initializing... done!");
 
+  setMode(config.programOn ? MODE_HOLD : MODE_OFF);
   setState(STATE_DEFAULT);
 }
 
@@ -290,41 +303,43 @@ void loop() {
     //   pushStats();
     // }
   }
-
 }
 
-void setState(int state) {
+void setState(int nextState) {
   int _prevDisplayState = displayState;
   
   if (_prevDisplayState == STATE_DEFAULT) {
     refreshDisplayTimer.stop();
   }
 
-  displayState = state;
-  switch(state) {
+  displayState = nextState;
+  switch(nextState) {
     case STATE_DEFAULT:
+      menuInactivityTimer.stop();
       refreshDisplayTimer.start();
       break;
     case STATE_MENU:
+      latestMenuActivityTS = Time.now();
+      menuInactivityTimer.start();
       if (_prevDisplayState == STATE_DEFAULT) {
         menuFirstItemIndex = 0;
         menuItemIndex = 0;
       }
       break;
     case STATE_MENU_SET_TEMP:
-      tTargetTemp = targetTemp;
+      tTargetTemp = config.targetTemp;
       break;
     case STATE_MENU_CALIBRATE:
-      calibrationTemp = (fahrenheit == NAN || fahrenheit <= 0) ? targetTemp : fahrenheit;
+      calibrationTemp = (fahrenheit == NAN || fahrenheit <= 0) ? config.targetTemp : fahrenheit;
       break;
     case STATE_MENU_HEAT_DIFF:
-      tHeatingDifferential = heatingDifferential;
+      tHeatingDifferential = config.heatingDifferential;
       break;
     case STATE_MENU_COOL_DIFF:
-      tCoolingDifferential = coolingDifferential;
+      tCoolingDifferential = config.coolingDifferential;
       break;
     case STATE_MENU_SET_PRECISION:
-      tTempPrecision = tempPrecision;
+      tTempPrecision = config.tempPrecision;
       break;
   }
   refreshDisplay(true);
@@ -337,9 +352,14 @@ void upBtnPressed() {
     return;
   }
   Log.trace("Up btn pressed");
+  
+  if (displayState != STATE_DEFAULT) {
+    latestMenuActivityTS = Time.now();
+  }
+
   switch(displayState) {
     case STATE_MENU_SET_TEMP:
-      tTargetTemp = tTargetTemp + tempPrecision;
+      tTargetTemp = tTargetTemp + config.tempPrecision;
       refreshDisplay();
       break;
     case STATE_MENU:
@@ -363,12 +383,17 @@ void upBtnPressed() {
       refreshDisplay();
       break;
     case STATE_MENU_HEAT_DIFF:
-      tHeatingDifferential = tHeatingDifferential + tempPrecision;
+      tHeatingDifferential = tHeatingDifferential + config.tempPrecision;
       refreshDisplay();
       break;
     case STATE_MENU_COOL_DIFF:
-      tCoolingDifferential = tCoolingDifferential + tempPrecision;
+      tCoolingDifferential = tCoolingDifferential + config.tempPrecision;
       refreshDisplay();
+      break;
+    case STATE_MENU_RESET_CONFIG:
+      config = {68, 1, 1, .5, 0, config.programOn};
+      saveConfig();
+      setState(STATE_MENU);
       break;
   }
 }
@@ -384,9 +409,14 @@ void downBtnPressed() {
     return;
   }
   Log.trace("Down btn pressed");
+  
+  if (displayState != STATE_DEFAULT) {
+    latestMenuActivityTS = Time.now();
+  }
+
   switch(displayState) {
     case STATE_MENU_SET_TEMP:
-      tTargetTemp = tTargetTemp - tempPrecision;
+      tTargetTemp = tTargetTemp - config.tempPrecision;
       refreshDisplay();
       break;
     case STATE_MENU:
@@ -413,7 +443,7 @@ void downBtnPressed() {
       break;
     case STATE_MENU_HEAT_DIFF:
       if(tHeatingDifferential > 0) {
-        tHeatingDifferential = tHeatingDifferential - tempPrecision;
+        tHeatingDifferential = tHeatingDifferential - config.tempPrecision;
         if (tHeatingDifferential < 0) {
           tHeatingDifferential = 0;
         }
@@ -422,12 +452,15 @@ void downBtnPressed() {
       break;
     case STATE_MENU_COOL_DIFF:
       if(tCoolingDifferential > 0) {
-        tCoolingDifferential = tCoolingDifferential - tempPrecision;
+        tCoolingDifferential = tCoolingDifferential - config.tempPrecision;
         if (tCoolingDifferential < 0) {
           tCoolingDifferential = 0;
         }
         refreshDisplay();
       }
+      break;
+    case STATE_MENU_RESET_CONFIG:
+      setState(STATE_MENU);
       break;
   }
 }
@@ -442,6 +475,10 @@ void setBtnPressed() {
     return;
   }
 
+  if (displayState != STATE_DEFAULT) {
+    latestMenuActivityTS = Time.now();
+  }
+
   switch(displayState) {
     case STATE_MENU:
       switch(menuItemIndex) {
@@ -450,6 +487,10 @@ void setBtnPressed() {
           break;
         case 1:
           setMode(currentMode == MODE_OFF ? MODE_HOLD : MODE_OFF);
+          config.programOn = currentMode != MODE_OFF;
+          saveConfig();
+          // TODO: Update data service
+          // deviceService.updateProgramState(deviceId, config.programOn);
           setState(STATE_DEFAULT);
           break;
         case 2:
@@ -466,38 +507,46 @@ void setBtnPressed() {
           setState(STATE_MENU_SET_PRECISION);
           break;
         case 6:
+          setState(STATE_MENU_RESET_CONFIG);
+          break;
+        case 7:
           setState(STATE_DEFAULT);
           break;
       }
       break;
     case STATE_MENU_SET_TEMP:
-      targetTemp = tTargetTemp;
+      config.targetTemp = tTargetTemp;
+      saveConfig();
       // TODO: Update data service
-      // deviceService.updateTargetTemp(deviceId, targetTemp);
+      // deviceService.updateTargetTemp(deviceId, config.targetTemp);
       setState(STATE_MENU);
       break;
     case STATE_MENU_CALIBRATE:
-      calibrationDiff = calibrationTemp - fahrenheit;
+      config.calibrationDiff = calibrationTemp - fahrenheit;
+      saveConfig();
       // TODO: Update data service
-      // deviceService.updateCalibrationDiff(deviceId, calibrationDiff);
+      // deviceService.updateCalibrationDiff(deviceId, config.calibrationDiff);
       setState(STATE_MENU);
       break;
     case STATE_MENU_HEAT_DIFF:
-      heatingDifferential = tHeatingDifferential;
+      config.heatingDifferential = tHeatingDifferential;
+      saveConfig();
       // TODO: Update data service
-      // deviceService.updateHeatingDifferential(deviceId, heatingDifferential);
+      // deviceService.updateHeatingDifferential(deviceId, config.heatingDifferential);
       setState(STATE_MENU);
       break;
     case STATE_MENU_COOL_DIFF:
-      coolingDifferential = tCoolingDifferential;
+      config.coolingDifferential = tCoolingDifferential;
+      saveConfig();
       // TODO: Update data service
-      // deviceService.updateCoolingDifferential(deviceId, coolingDifferential);
+      // deviceService.updateCoolingDifferential(deviceId, config.coolingDifferential);
       setState(STATE_MENU);
       break;
     case STATE_MENU_SET_PRECISION:
-      tempPrecision = tTempPrecision;
+      config.tempPrecision = tTempPrecision;
+      saveConfig();
       // TODO: Update data service
-      // deviceService.updatePrecision(deviceId, tempPrecision);
+      // deviceService.updatePrecision(deviceId, config.tempPrecision);
       setState(STATE_MENU);
       break;
   }
@@ -505,6 +554,10 @@ void setBtnPressed() {
 
 void setBtnPressedLong() {
   btnSetLongPressedHandled = true;
+
+  if (displayState != STATE_DEFAULT) {
+    latestMenuActivityTS = Time.now();
+  }
 
   switch(displayState) {
     case STATE_DEFAULT:
@@ -530,23 +583,23 @@ void setMode(uint8_t mode) {
 }
 
 void setModeCtl() {
-  int _previousMode = currentMode;
+  //int _previousMode = currentMode;
 
   if(currentMode != MODE_OFF) {
     if(fahrenheit > 0 && fahrenheit != NAN) {
       switch(currentMode) {
         case MODE_COOLING:
-          if(fahrenheit <= targetTemp) {
+          if(fahrenheit <= config.targetTemp) {
             setMode(MODE_HOLD);
           }
           break;
         case MODE_HEATING:
-          if(fahrenheit >= targetTemp) {
+          if(fahrenheit >= config.targetTemp) {
             setMode(MODE_HOLD);
           }
           break;
         case MODE_HOLD:
-          setMode(fahrenheit > (targetTemp + coolingDifferential) ?  MODE_COOLING : fahrenheit < (targetTemp - heatingDifferential) ? MODE_HEATING : MODE_HOLD);
+          setMode(fahrenheit > (config.targetTemp + config.coolingDifferential) ?  MODE_COOLING : fahrenheit < (config.targetTemp - config.heatingDifferential) ? MODE_HEATING : MODE_HOLD);
           break;
       }
     } else {
@@ -555,25 +608,23 @@ void setModeCtl() {
     }
   }
 
-  if (currentMode != _previousMode) {
-    switch(currentMode) {
-      case MODE_COOLING:
-        digitalWrite(P_CTRL_COOL, HIGH);
-        digitalWrite(P_CTRL_HEAT, LOW);
-        break;
-      case MODE_HEATING:
-        digitalWrite(P_CTRL_COOL, LOW);
-        digitalWrite(P_CTRL_HEAT, MODE_HEATING);
-        break;
-      case MODE_HOLD:
-        digitalWrite(P_CTRL_COOL, LOW);
-        digitalWrite(P_CTRL_HEAT, LOW);
-        break;
-      case MODE_OFF:
-        digitalWrite(P_CTRL_COOL, LOW);
-        digitalWrite(P_CTRL_HEAT, LOW);
-        break;
-    }
+  switch(currentMode) {
+    case MODE_COOLING:
+      digitalWrite(P_CTRL_COOL, HIGH);
+      digitalWrite(P_CTRL_HEAT, LOW);
+      break;
+    case MODE_HEATING:
+      digitalWrite(P_CTRL_COOL, LOW);
+      digitalWrite(P_CTRL_HEAT, MODE_HEATING);
+      break;
+    case MODE_HOLD:
+      digitalWrite(P_CTRL_COOL, LOW);
+      digitalWrite(P_CTRL_HEAT, LOW);
+      break;
+    case MODE_OFF:
+      digitalWrite(P_CTRL_COOL, LOW);
+      digitalWrite(P_CTRL_HEAT, LOW);
+      break;
   }
 }
 
@@ -615,7 +666,7 @@ void refreshDisplay(bool clear){
 
     lcd.setCursor(0,2);
     if (currentMode != MODE_OFF) {
-      lcd.printf("Target Temp:  %.1f%cf", targetTemp, CHAR_DEGREE);
+      lcd.printf("Target Temp:  %.1f%cf", config.targetTemp, CHAR_DEGREE);
     } else {
       lcd.printf("                    "); 
     }
@@ -687,6 +738,16 @@ void refreshDisplay(bool clear){
     lcd.setCursor(0,3);
     lcd.printf("                    ");
   }
+  if (displayState == STATE_MENU_RESET_CONFIG) {
+    lcd.setCursor(0,0);
+    lcd.printf("Set Temp Precision");
+    lcd.setCursor(0,1);
+    lcd.printf("                    ");
+    lcd.setCursor(0,2);
+    lcd.printf("Up:   Confirm       ");
+    lcd.setCursor(0,3);
+    lcd.printf("Down: Cancel        ");
+  }
   refreshLock = false;
 }
 
@@ -700,7 +761,7 @@ void getTemp(){
 
   if (i < MAXRETRY) {
     prevFahrenheit = fahrenheit;
-    fahrenheit = ds18b20.convertToFahrenheit(_temp) + calibrationDiff;
+    fahrenheit = ds18b20.convertToFahrenheit(_temp) + config.calibrationDiff;
 
     if (APP_LOG_LEVEL == LOG_LEVEL_ALL || APP_LOG_LEVEL == LOG_LEVEL_TRACE) {
       Serial.printlnf("Temperature reading: %.2f", fahrenheit);
@@ -717,7 +778,7 @@ void getTemp(){
 int cldSetTargetTemp(String data) {
   float t = data.toFloat();
   if (t > 0) {
-    targetTemp = t;
+    config.targetTemp = t;
   }
 
   return 0;
@@ -749,13 +810,19 @@ uint8_t ping() {
       if(deviceData.isNull) {
           Log.warn("Device not found on server.  Attempting to register");
 
-          deviceData = dataService.registerDevice(manufacturerId, targetTemp, calibrationDiff);
+          deviceData = dataService.registerDevice(manufacturerId, config.targetTemp, config.calibrationDiff);
       }
 
       if(!deviceData.isNull) {
           deviceId = deviceData.id;
-          targetTemp = deviceData.targetTemp;
-          calibrationDiff = deviceData.calibrationDiff;
+          config.targetTemp = deviceData.targetTemp;
+          config.calibrationDiff = deviceData.calibrationDiff;
+          config.coolingDifferential = deviceData.coolingDifferential;
+          config.heatingDifferential = deviceData.heatingDifferential;
+          config.tempPrecision = deviceData.tempPrecision;
+          config.programOn = deviceData.programOn;
+
+          saveConfig();
       } else {
         Log.error("Registration failed, no device information returned.");
         return 2;
@@ -799,4 +866,52 @@ uint8_t pushStats() {
   }
 
   return 0;
+}
+
+void saveConfig() {
+  EEPROM.put(0, config);
+
+  Log.trace("Saved Config: Target Temp: %.2f", config.targetTemp);
+  Log.trace("Saved Config: Target Temp Precision: %.2f", config.tempPrecision);
+  Log.trace("Saved Config: Calibration Differential: %.2f", config.calibrationDiff);
+  Log.trace("Saved Config: Heating Differential: %.2f", config.heatingDifferential);
+  Log.trace("Saved Config: Cooling Differential: %.2f", config.coolingDifferential);
+  Log.trace("Saved Config: Program on: %s", config.programOn ? "true" : "false");
+}
+
+void loadConfig() {
+  Config _config;
+  EEPROM.get(0, _config);
+
+  if (_config.targetTemp > 0) {
+    Log.info("Loading config.");
+    config.calibrationDiff = _config.calibrationDiff;
+    config.coolingDifferential = _config.coolingDifferential;
+    config.heatingDifferential = _config.heatingDifferential;
+    config.targetTemp = _config.targetTemp;
+    config.tempPrecision = _config.tempPrecision;
+    config.programOn = _config.programOn;
+
+    Log.trace("Loaded Config: Target Temp: %.2f", _config.targetTemp);
+    Log.trace("Loaded Config: Target Temp Precision: %.2f", _config.tempPrecision);
+    Log.trace("Loaded Config: Calibration Differential: %.2f", _config.calibrationDiff);
+    Log.trace("Loaded Config: Heating Differential: %.2f", _config.heatingDifferential);
+    Log.trace("Loaded Config: Cooling Differential: %.2f", _config.coolingDifferential);
+    Log.trace("Loaded Config: Program on: %s", _config.programOn ? "true" : "false");
+  } else {
+    Log.info("No existing state found, ignoring.");
+  }
+}
+
+void checkMenuInactivity() {
+  if (displayState == STATE_DEFAULT) {
+    return;
+  }
+
+  long inactivity = Time.now() - latestMenuActivityTS;
+  if (inactivity > 30) {
+    Serial.printlnf("[app.checkMenuInactivity] INFO: Menu inactivity has exceeded 30 seconds, returning to default screen.");
+    menuInactivityTimer.stop();
+    setState(STATE_DEFAULT);
+  }
 }
