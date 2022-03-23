@@ -1,5 +1,5 @@
-#ifndef __DATA_SERVICE_H__
-#define __DATA_SERVICE_H__
+#ifndef FERM_CTRL_DATA_SERVICE_H
+#define FERM_CTRL_DATA_SERVICE_H
 
 #include <ArduinoJson.h>
 #include <HttpClient.h>
@@ -62,4 +62,4 @@ private:
     device_data_t _parseDeviceData(DynamicJsonDocument jDoc);
 };
 
-#endif /* __DATA_SERVICE_H__ */
+#endif

@@ -4,10 +4,12 @@
  * Author: Alan Quillin
  */
 
+#include "constants.h"
+#include "diagnostics.h"
+#include "service.h"
 #include <LiquidCrystal_I2C_Spark.h>
 #include <DS18B20.h>
 #include <math.h>
-#include <service.h>
 #include <CircularBuffer.h>
 
 const LogLevel APP_LOG_LEVEL = LOG_LEVEL_ALL;
@@ -19,29 +21,12 @@ SerialLogHandler logHandler(LOG_LEVEL_WARN, { // Logging level for non-applicati
 //func prototypes
 void refreshDisplay(bool clear=false);
 
-//pin definitions
-const int16_t P_DS_DATA   = D2;
-//const int16_t P_DS_DATA   = D6;
-const int16_t P_BTN_UP    = A0;
-const int16_t P_BTN_DOWN  = A1;
-const int16_t P_BTN_SET   = A2;
-//const int16_t P_CTRL_COOL = D4;
-//const int16_t P_CTRL_HEAT = D5;
-const int16_t P_CTRL_COOL = D3;
-const int16_t P_CTRL_HEAT = D4;
-const int16_t EXTRA_GND[] = {D5};
-const int16_t EXTRA_PWR[] = {A3};
-
-//charactors
-const uint8_t CHAR_SPACE  = 0x20;
-const uint8_t CHAR_ARROW  = 0x7E;
-const uint8_t CHAR_DEGREE = 0xDF;
-
 // modes
-const uint8_t MODE_COOLING = 1;
-const uint8_t MODE_HEATING = 2;
-const uint8_t MODE_HOLD    = 3;
-const uint8_t MODE_OFF     = 0;
+const uint8_t MODE_OFF         = 0;
+const uint8_t MODE_COOLING     = 1;
+const uint8_t MODE_HEATING     = 2;
+const uint8_t MODE_HOLD        = 3;
+const uint8_t MODE_DIAGNOSTICS = 10;
 
 // states
 const uint8_t STATE_DEFAULT            = 0;
@@ -101,7 +86,7 @@ long latestMenuActivityTS;
 
 // menu state vars
 const String MENU_SET_MODE_OPTION = "<SET MODE>";
-const uint8_t MENU_ITEM_SIZE = 8;
+const uint8_t MENU_ITEM_SIZE = 9;
 const String MENU_ITEMS[MENU_ITEM_SIZE] = {
   "Set Target Temp   ",
   MENU_SET_MODE_OPTION,
@@ -110,6 +95,7 @@ const String MENU_ITEMS[MENU_ITEM_SIZE] = {
   "Set Cooling Diff  ",
   "Set Temp Precision",
   "Reset Config      ",
+  "Run Diagnostics   ",
   "Back              "
 };
 int menuFirstItemIndex = 0;
@@ -132,12 +118,15 @@ Timer refreshDisplayTimer(1000, refreshDisplayWrapper);
 Timer setModeTimer(1000, setModeCtl);
 Timer menuInactivityTimer(2000, checkMenuInactivity);
 
+Diagnostics diag(lcd, ds18b20, dataService, diagnosticsComplete, diagnosticsCancelled);
+
 // setup() runs once, when the device is first turned on.
 void setup() {
   // Put initialization like pinMode and begin functions here.
   Serial.begin(9600);
   
-  Log.trace("Initializing Pins.");
+  Log.info("Initializing...");
+  Log.trace("Initializing pins...");
   pinMode(P_BTN_UP, INPUT_PULLDOWN);
   pinMode(P_BTN_DOWN, INPUT_PULLDOWN);
   pinMode(P_BTN_SET, INPUT_PULLDOWN);
@@ -154,13 +143,13 @@ void setup() {
     pinMode(EXTRA_PWR[i], OUTPUT);
     digitalWrite(EXTRA_PWR[i], HIGH);
   }
-  Log.trace("Pin initialization done.");
+
+  Log.trace("Pins initialization done.");
 
   Log.info("Starting up...");
   lcd.init();
   lcd.backlight();
   lcd.clear();
-  Log.info("Initializing...");
   lcd.print("Initializing...");
   
   manufacturerId = System.deviceID();
@@ -279,7 +268,11 @@ void loop() {
     }
   }
 
-   if (prevFahrenheit != fahrenheit) {
+  if (currentMode == MODE_DIAGNOSTICS) {
+    return;
+  }
+
+  if (prevFahrenheit != fahrenheit) {
     if(prevFahrenheit != NAN && prevFahrenheit > 0 && prevFahrenheit < 100 && fahrenheit != NAN && fahrenheit > 0 && fahrenheit < 100) {
       float diff = prevFahrenheit - fahrenheit;
       Log.trace("getTemp: _prev: %f, diff: %f", prevFahrenheit, diff);
@@ -346,6 +339,11 @@ void setState(int nextState) {
 }
 
 void upBtnPressed() {
+  if (currentMode == MODE_DIAGNOSTICS) {
+    diag.upBtnPressed();
+    return;
+  }
+  
   uint32_t now = millis();
   if ((now - btnUpPressStart) >= LONG_BTN_PRESS_MILS) {
     Log.trace("up pressed function ignored since the button is long pressed");
@@ -403,11 +401,17 @@ void upBtnPressedLong() {
 }
 
 void downBtnPressed() {
+  if (currentMode == MODE_DIAGNOSTICS) {
+    diag.downBtnPressed();
+    return;
+  }
+
   uint32_t now = millis();
   if ((now - btnDownPressStart) >= LONG_BTN_PRESS_MILS) {
     Log.trace("button pressed function ignored since the button is long pressed");
     return;
   }
+
   Log.trace("Down btn pressed");
   
   if (displayState != STATE_DEFAULT) {
@@ -475,6 +479,11 @@ void setBtnPressed() {
     return;
   }
 
+  if (currentMode == MODE_DIAGNOSTICS) {
+    diag.setBtnPressed();
+    return;
+  }
+
   if (displayState != STATE_DEFAULT) {
     latestMenuActivityTS = Time.now();
   }
@@ -510,6 +519,10 @@ void setBtnPressed() {
           setState(STATE_MENU_RESET_CONFIG);
           break;
         case 7:
+          setMode(MODE_DIAGNOSTICS);
+          diag.run();
+          break;
+        case 8:
           setState(STATE_DEFAULT);
           break;
       }
@@ -555,6 +568,12 @@ void setBtnPressed() {
 void setBtnPressedLong() {
   btnSetLongPressedHandled = true;
 
+  if (currentMode == MODE_DIAGNOSTICS) {
+    Log.trace("In diag mode, Set buttons long held... cancelling diagnostics.");
+    diagnosticsCancelled();
+    return;
+  }
+
   if (displayState != STATE_DEFAULT) {
     latestMenuActivityTS = Time.now();
   }
@@ -583,6 +602,9 @@ void setMode(uint8_t mode) {
 }
 
 void setModeCtl() {
+  if (currentMode == MODE_DIAGNOSTICS) {
+    return;
+  }
   //int _previousMode = currentMode;
 
   if(currentMode != MODE_OFF) {
@@ -629,10 +651,14 @@ void setModeCtl() {
 }
 
 void refreshDisplayWrapper() {
+  if (currentMode == MODE_DIAGNOSTICS) {
+    return;
+  }
+
   refreshDisplay(false);
 }
 
-void refreshDisplay(bool clear){
+void refreshDisplay(bool clear) {
   if (refreshLock) {
     return;
   }
@@ -690,68 +716,72 @@ void refreshDisplay(bool clear){
   }
   if (displayState == STATE_MENU_SET_TEMP) {
     lcd.setCursor(0,0);
-    lcd.printf("Set Target Temp:    ");
+    lcd.print("Set Target Temp:    ");
     lcd.setCursor(0,1);
-    lcd.printf("                    ");
+    lcd.print(EMPTY_ROW);
     lcd.setCursor(0,2);
     lcd.printf("Target Temp:  %3.1f%cf", tTargetTemp, CHAR_DEGREE);
     lcd.setCursor(0,3);
-    lcd.printf("                    ");
+    lcd.print(EMPTY_ROW);
   }
   if (displayState == STATE_MENU_CALIBRATE) {
     lcd.setCursor(0,0);
-    lcd.printf("Calibrate:          ");
+    lcd.print("Calibrate:          ");
     lcd.setCursor(0,1);
-    lcd.printf("                    ");
+    lcd.print(EMPTY_ROW);
     lcd.setCursor(0,2);
     lcd.printf("Control Temp: %3.1f%cf", calibrationTemp, CHAR_DEGREE);
     lcd.setCursor(0,3);
-    lcd.printf("                    ");
+    lcd.print(EMPTY_ROW);
   }
   if (displayState == STATE_MENU_HEAT_DIFF) {
     lcd.setCursor(0,0);
-    lcd.printf("Set Heating Diff");
+    lcd.print("Set Heating Diff    ");
     lcd.setCursor(0,1);
-    lcd.printf("                    ");
+    lcd.print(EMPTY_ROW);
     lcd.setCursor(0,2);
     lcd.printf("Differential: %3.1f%cf", tHeatingDifferential, CHAR_DEGREE);
     lcd.setCursor(0,3);
-    lcd.printf("                    ");
+    lcd.print(EMPTY_ROW);
   }
   if (displayState == STATE_MENU_COOL_DIFF) {
     lcd.setCursor(0,0);
-    lcd.printf("Set Cooling Diff");
+    lcd.print("Set Cooling Diff    ");
     lcd.setCursor(0,1);
-    lcd.printf("                    ");
+    lcd.print(EMPTY_ROW);
     lcd.setCursor(0,2);
     lcd.printf("Differential: %3.1f%cf", tCoolingDifferential, CHAR_DEGREE);
     lcd.setCursor(0,3);
-    lcd.printf("                    ");
+    lcd.print(EMPTY_ROW);
   }
   if (displayState == STATE_MENU_SET_PRECISION) {
     lcd.setCursor(0,0);
-    lcd.printf("Set Temp Precision");
+    lcd.print("Set Temp Precision  ");
     lcd.setCursor(0,1);
-    lcd.printf("                    ");
+    lcd.print(EMPTY_ROW);
     lcd.setCursor(0,2);
     lcd.printf("Value: %3.1f%cf", tTempPrecision, CHAR_DEGREE);
     lcd.setCursor(0,3);
-    lcd.printf("                    ");
+    lcd.print(EMPTY_ROW);
   }
   if (displayState == STATE_MENU_RESET_CONFIG) {
     lcd.setCursor(0,0);
-    lcd.printf("Set Temp Precision");
+    lcd.print("Reset Configuration ");
     lcd.setCursor(0,1);
-    lcd.printf("                    ");
+    lcd.print(EMPTY_ROW);
     lcd.setCursor(0,2);
-    lcd.printf("Up:   Confirm       ");
+    lcd.print("Up:   Confirm       ");
     lcd.setCursor(0,3);
-    lcd.printf("Down: Cancel        ");
+    lcd.print("Down: Cancel        ");
   }
   refreshLock = false;
 }
 
 void getTemp(){
+  if (currentMode == MODE_DIAGNOSTICS) {
+    return;
+  }
+
   float _temp;
   int   i = 0;
 
@@ -904,7 +934,7 @@ void loadConfig() {
 }
 
 void checkMenuInactivity() {
-  if (displayState == STATE_DEFAULT) {
+  if (displayState == STATE_DEFAULT || currentMode == MODE_DIAGNOSTICS) {
     return;
   }
 
@@ -914,4 +944,15 @@ void checkMenuInactivity() {
     menuInactivityTimer.stop();
     setState(STATE_DEFAULT);
   }
+}
+
+void diagnosticsCancelled() {
+  Log.trace("Diagnostics cancelled.");
+  setMode(config.programOn ? MODE_HOLD : MODE_OFF);
+  setState(STATE_MENU);
+}
+
+void diagnosticsComplete() {
+  setMode(config.programOn ? MODE_HOLD : MODE_OFF);
+  setState(STATE_DEFAULT);
 }
