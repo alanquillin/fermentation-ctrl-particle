@@ -7795,6 +7795,7 @@ LED</description>
 <attribute name="MPN" value="4300F1LC"/>
 <attribute name="OC_NEWARK" value="05C1482"/>
 </part>
+<part name="P+11" library="supply1" library_urn="urn:adsk.eagle:library:371" deviceset="+5V" device=""/>
 </parts>
 <sheets>
 <sheet>
@@ -7820,12 +7821,12 @@ LED</description>
 <attribute name="MF" x="106.68" y="88.9" size="1.778" layer="96" display="off"/>
 <attribute name="MPN" x="106.68" y="88.9" size="1.778" layer="96" display="off"/>
 </instance>
-<instance part="R3" gate="G$1" x="104.14" y="99.06" smashed="yes">
-<attribute name="NAME" x="100.33" y="100.5586" size="1.778" layer="95"/>
-<attribute name="VALUE" x="100.33" y="95.758" size="1.778" layer="96"/>
-<attribute name="OC_NEWARK" x="104.14" y="99.06" size="1.778" layer="96" display="off"/>
-<attribute name="MF" x="104.14" y="99.06" size="1.778" layer="96" display="off"/>
-<attribute name="MPN" x="104.14" y="99.06" size="1.778" layer="96" display="off"/>
+<instance part="R3" gate="G$1" x="152.4" y="99.06" smashed="yes" rot="R90">
+<attribute name="NAME" x="150.9014" y="95.25" size="1.778" layer="95" rot="R90"/>
+<attribute name="VALUE" x="155.702" y="95.25" size="1.778" layer="96" rot="R90"/>
+<attribute name="OC_NEWARK" x="152.4" y="99.06" size="1.778" layer="96" rot="R90" display="off"/>
+<attribute name="MF" x="152.4" y="99.06" size="1.778" layer="96" rot="R90" display="off"/>
+<attribute name="MPN" x="152.4" y="99.06" size="1.778" layer="96" rot="R90" display="off"/>
 </instance>
 <instance part="GND1" gate="1" x="53.34" y="139.7" smashed="yes" rot="R270">
 <attribute name="VALUE" x="50.8" y="142.24" size="1.778" layer="96" rot="R270"/>
@@ -7988,8 +7989,8 @@ LED</description>
 <instance part="P+9" gate="1" x="152.4" y="121.92" smashed="yes">
 <attribute name="VALUE" x="149.86" y="116.84" size="1.778" layer="96" rot="R90"/>
 </instance>
-<instance part="GND6" gate="1" x="149.86" y="111.76" smashed="yes" rot="R270">
-<attribute name="VALUE" x="147.32" y="114.3" size="1.778" layer="96" rot="R270"/>
+<instance part="GND6" gate="1" x="144.78" y="111.76" smashed="yes" rot="R270">
+<attribute name="VALUE" x="142.24" y="114.3" size="1.778" layer="96" rot="R270"/>
 </instance>
 <instance part="R_COOL" gate="G$1" x="48.26" y="60.96" smashed="yes">
 <attribute name="NAME" x="43.1791" y="66.803040625" size="1.77831875" layer="95"/>
@@ -8028,6 +8029,9 @@ LED</description>
 <attribute name="OC_NEWARK" x="137.16" y="66.04" size="1.778" layer="96" display="off"/>
 <attribute name="MF" x="137.16" y="66.04" size="1.778" layer="96" display="off"/>
 <attribute name="MPN" x="137.16" y="66.04" size="1.778" layer="96" display="off"/>
+</instance>
+<instance part="P+11" gate="1" x="152.4" y="88.9" smashed="yes" rot="R180">
+<attribute name="VALUE" x="154.94" y="93.98" size="1.778" layer="96" rot="R270"/>
 </instance>
 </instances>
 <busses>
@@ -8077,7 +8081,7 @@ LED</description>
 </segment>
 <segment>
 <pinref part="TEMP_SENSOR_CONN" gate="G$1" pin="2"/>
-<wire x1="154.94" y1="111.76" x2="152.4" y2="111.76" width="0.1524" layer="91"/>
+<wire x1="154.94" y1="111.76" x2="147.32" y2="111.76" width="0.1524" layer="91"/>
 <pinref part="GND6" gate="1" pin="GND"/>
 </segment>
 <segment>
@@ -8150,6 +8154,11 @@ LED</description>
 <pinref part="P+10" gate="1" pin="+5V"/>
 <wire x1="17.78" y1="139.7" x2="20.32" y2="139.7" width="0.1524" layer="91"/>
 <wire x1="20.32" y1="139.7" x2="20.32" y2="137.16" width="0.1524" layer="91"/>
+</segment>
+<segment>
+<pinref part="R3" gate="G$1" pin="1"/>
+<wire x1="152.4" y1="93.98" x2="152.4" y2="91.44" width="0.1524" layer="91"/>
+<pinref part="P+11" gate="1" pin="+5V"/>
 </segment>
 </net>
 <net name="SCL" class="0">
@@ -8326,23 +8335,20 @@ LED</description>
 <label x="2.54" y="106.68" size="1.778" layer="95" xref="yes"/>
 </segment>
 </net>
-<net name="N$1" class="0">
-<segment>
-<pinref part="U$1" gate="G$1" pin="D2"/>
-<pinref part="R3" gate="G$1" pin="1"/>
-<wire x1="99.06" y1="99.06" x2="96.52" y2="99.06" width="0.1524" layer="91"/>
-</segment>
-</net>
 <net name="TEMP_DATA" class="0">
 <segment>
+<pinref part="TEMP_SENSOR_CONN" gate="G$1" pin="3"/>
+<label x="147.32" y="109.22" size="1.778" layer="95" rot="R270" xref="yes"/>
+<wire x1="154.94" y1="109.22" x2="152.4" y2="109.22" width="0.1524" layer="91"/>
+<junction x="152.4" y="109.22"/>
+<wire x1="152.4" y1="109.22" x2="147.32" y2="109.22" width="0.1524" layer="91"/>
 <pinref part="R3" gate="G$1" pin="2"/>
-<wire x1="109.22" y1="99.06" x2="111.76" y2="99.06" width="0.1524" layer="91"/>
-<label x="111.76" y="99.06" size="1.778" layer="95" xref="yes"/>
+<wire x1="152.4" y1="104.14" x2="152.4" y2="109.22" width="0.1524" layer="91"/>
 </segment>
 <segment>
-<pinref part="TEMP_SENSOR_CONN" gate="G$1" pin="3"/>
-<wire x1="154.94" y1="109.22" x2="152.4" y2="109.22" width="0.1524" layer="91"/>
-<label x="152.4" y="109.22" size="1.778" layer="95" rot="R270" xref="yes"/>
+<pinref part="U$1" gate="G$1" pin="D2"/>
+<wire x1="96.52" y1="99.06" x2="99.06" y2="99.06" width="0.1524" layer="91"/>
+<label x="99.06" y="99.06" size="1.778" layer="95" xref="yes"/>
 </segment>
 </net>
 <net name="N$13" class="0">
