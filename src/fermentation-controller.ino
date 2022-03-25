@@ -152,7 +152,7 @@ void setup() {
   lcd.init();
   lcd.backlight();
   lcd.clear();
-  lcd.print("Initializing...");
+  lcd.print("Initializing... ");
   
   manufacturerId = System.deviceID();
 
@@ -166,8 +166,8 @@ void setup() {
   waitFor(WiFi.ready, 30000);
   lcd.printf("%s", WiFi.ready() ? "connected!" : "timeedout");
 
- 
-  
+  lcd.setCursor(0,2);
+  lcd.print("Loading config... ");
   Log.trace("Setting up cloud functions and variables.");
   Particle.function("setTargetTempF", cldSetTargetTemp);
   Particle.function("setMode", cldSetMode);
@@ -179,8 +179,9 @@ void setup() {
   Log.trace("Cloud stuff all set up!");
   
   loadConfig();
+  lcd.print("ok");
 
-  lcd.setCursor(0,2);
+  lcd.setCursor(0,3);
   lcd.print("Data Svc... ");
   uint8_t pingStatus = ping();
   switch(pingStatus) {
@@ -210,8 +211,8 @@ void setup() {
   setModeTimer.start();
 
   Log.info("Initialization complete!");
-  lcd.setCursor(0,0);
-  lcd.print("Initializing... done!");
+  lcd.setCursor(16,0);
+  lcd.print("done");
 
   delay(2);
   setMode(config.programOn ? MODE_HOLD : MODE_OFF);
@@ -329,7 +330,7 @@ void setState(int nextState) {
       tTargetTemp = config.targetTemp;
       break;
     case STATE_MENU_CALIBRATE:
-      calibrationTemp = (fahrenheit == NAN || fahrenheit <= 0) ? config.targetTemp : fahrenheit;
+      calibrationTemp = ((isnan(fahrenheit) || fahrenheit <= 0) ? config.targetTemp : fahrenheit) + config.calibrationDiff;
       break;
     case STATE_MENU_HEAT_DIFF:
       tHeatingDifferential = config.heatingDifferential;
@@ -495,6 +496,9 @@ void setBtnPressed() {
   }
 
   switch(displayState) {
+    case STATE_DEFAULT:
+      setState(STATE_MENU_SET_TEMP);
+      break;
     case STATE_MENU:
       switch(menuItemIndex) {
         case 0:
@@ -694,7 +698,13 @@ void refreshDisplay(bool clear) {
     lcd.printf("Status: %s     ",  statusStr.c_str());
 
     lcd.setCursor(0,1);
-    lcd.printf("Current Temp: %.1f%cf", fahrenheit, CHAR_DEGREE);
+    if (isnan(fahrenheit)) {
+      lcd.print("Probe err or missing");
+    } else if(fahrenheit == 0) {
+      lcd.print(EMPTY_ROW);
+    } else {
+      lcd.printf("Current Temp: %.1f%cf", fahrenheit, CHAR_DEGREE);
+    }
 
     lcd.setCursor(0,2);
     if (currentMode != MODE_OFF) {
