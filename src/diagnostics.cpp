@@ -84,7 +84,7 @@ void Diagnostics::upBtnPressed(){
         case UP_BTN:
             lcd.setCursor(0,3);
             lcd.print("Passed!             ");
-            delay(1000);
+            delay(500);
             setState(DOWN_BTN);
             break;
         case HEAT_OUTLET:
@@ -124,7 +124,7 @@ void Diagnostics::downBtnPressed() {
         case DOWN_BTN:
             lcd.setCursor(0,3);
             lcd.print("Passed!             ");
-            delay(1000);
+            delay(500);
             setState(SET_BTN);
             break;
         case HEAT_OUTLET:
@@ -143,7 +143,7 @@ void Diagnostics::setBtnPressed() {
         case SET_BTN:
             lcd.setCursor(0,3);
             lcd.print("Passed!             ");
-            delay(1000);
+            delay(500);
             setState(HEAT_OUTLET);
             break;
     }
