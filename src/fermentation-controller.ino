@@ -1,3 +1,5 @@
+SYSTEM_THREAD(ENABLED);
+
 /*
  * Project fermentation-controller
  * Description:
@@ -160,10 +162,11 @@ void setup() {
   Log.trace("Wifi IP address: %s", WiFi.localIP().toString().c_str());
 
   lcd.setCursor(0,1);
-  lcd.printf("Wifi... %s", WiFi.ready() ? "connected!" : "failed");
+  lcd.print("WiFi... ");
+  waitFor(WiFi.ready, 30000);
+  lcd.printf("%s", WiFi.ready() ? "connected!" : "timeedout");
 
-  Log.trace("Temp sensor chip type: %x", ds18b20.getChipType());
-  Log.trace("Temp sensor chip name: %s", ds18b20.getChipName());
+ 
   
   Log.trace("Setting up cloud functions and variables.");
   Particle.function("setTargetTempF", cldSetTargetTemp);
@@ -199,6 +202,8 @@ void setup() {
   Log.trace("Heating Differential: %.2f", config.heatingDifferential);
   Log.trace("Cooling Differential: %.2f", config.coolingDifferential);
   Log.trace("Program on: %s", config.programOn ? "true" : "false");
+  Log.trace("Temp sensor chip type: %x", ds18b20.getChipType());
+  Log.trace("Temp sensor chip name: %s", ds18b20.getChipName());
 
   tempTimer.start();
   refreshDisplayTimer.start();
@@ -208,6 +213,7 @@ void setup() {
   lcd.setCursor(0,0);
   lcd.print("Initializing... done!");
 
+  delay(2);
   setMode(config.programOn ? MODE_HOLD : MODE_OFF);
   setState(STATE_DEFAULT);
 }
